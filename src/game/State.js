@@ -1,13 +1,17 @@
 import 'pixi.js';
 import 'p2';
 import Phaser from 'phaser';
-import { pick } from 'lodash';
 
+let totaltime = 0;
+let timesRun = 0;
 function serializeState(world) {
+  //let s = performance.now();
   const {sprites, texts} = recursivelyGetData(world.children);
-  const spriteData = getSpriteData(sprites);
-  const textData = getTextData(texts);
-  return {sprites: spriteData, texts: textData};
+  //let e = performance.now();
+  //totaltime = totaltime + (e - s);
+  //timesRun += 1;
+  //console.log('Time to serialize state per run: ' + (totaltime/timesRun)); 
+  return {sprites: sprites, texts: texts};
 }
 
 function recursivelyGetData(children){
@@ -15,9 +19,11 @@ function recursivelyGetData(children){
     // The order matters because Text is a Child of Sprite,
     // so it would evaluate true to both
     if(child instanceof Phaser.Text){
-      data.texts.push(child);
+      let {x, y, text, style } = child;
+      data.texts.push({x, y, text, style });
     } else if (child instanceof Phaser.Sprite) {
-      data.sprites.push(child);
+      let {x, y, key, frame, scale } = child;
+      data.sprites.push({x, y, key, frame, scale});
     }
 
     if(child.children.length > 0) {
@@ -30,18 +36,6 @@ function recursivelyGetData(children){
   }, {
     sprites: [],
     texts: []
-  });
-}
-
-function getSpriteData(sprites) {
-  return sprites.map((sprite) => {
-    return pick(sprite, ['x', 'y', 'key', 'frame', 'scale'])
-  });
-}
-
-function getTextData(texts) {
-  return texts.map((text) => {
-    return pick(text, ['x', 'y', 'text', 'style'])
   });
 }
 
