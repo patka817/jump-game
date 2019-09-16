@@ -4,14 +4,14 @@ import HostName from './host/HostName';
 import Player from './player/Player';
 import Guest from './guest/Guest';
 import AppBar from 'material-ui/AppBar';
-import Peer from 'simple-peer';
+import PeerJS from 'peerjs';
 import Paper from 'material-ui/Paper';
 //import TestGame from './testgame/TestGame';
 
 class App extends Component {
   constructor(){
     super();
-    if(Peer.WEBRTC_SUPPORT){ // test for webrtc support
+    if( true ){ // test for webrtc support
       this.state = {
         role: 'visitor'
       };
@@ -53,8 +53,10 @@ class App extends Component {
         />
         <Paper
           style={{
-            height: 500,
-            width: 600,
+            height: '100%',
+            width: '100%',
+            maxHeight: 500,
+            maxWidth: 600,
             margin: 'auto',
             marginTop: 25,
             padding: 20,

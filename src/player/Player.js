@@ -1,24 +1,22 @@
 import React, { Component } from 'react';
 import TextField from 'material-ui/TextField';
 import RaisedButton from 'material-ui/RaisedButton';
-import * as firebase from 'firebase';
-import SimplePeer from 'simple-peer';
 import DisplayGame from './DisplayGame';
 import LobbyList from '../lobby/LobbyList';
 import { OnInputChange } from '../game/Input';
 import CircularProgress from 'material-ui/CircularProgress';
+import { Mesh, Events } from '../rtcmesh';
 
 class Player extends Component {
   constructor() {
     super();
     this.state = {
-      code: '',
+      hostCode: '',
       name: '',
       connected: false,
       connecting: false,
       gameStarted: false,
       error: '',
-      database: firebase.database(),
       host: null,
       players: [],
       gameState: {
@@ -26,14 +24,10 @@ class Player extends Component {
       }
     }
 
-    this.peer = null;
-
-    this.broadcast = (obj) => {
-      this.peer.send(JSON.stringify(obj));
-    }
+    this.mesh = null;
 
     this.sendReady = (ready) => {
-      this.broadcast({
+      this.mesh.broadcast({
         type: 'ready',
         ready: ready
       });
@@ -59,7 +53,7 @@ class Player extends Component {
 
     this.trackInputs = () => {
       OnInputChange((input) => {
-        this.broadcast({
+        this.mesh.broadcast({
           type: 'input',
           input: input
         })
@@ -69,73 +63,37 @@ class Player extends Component {
 
   joinGame = () => {
     this.setState({error: '', connecting: true});
-    const {code, database, name} = this.state;
-    const nameRef = database.ref('/rooms/'+code+'/players/'+name);
-    nameRef.once('value').then((data) => {
-      const val = data.val();
-      if (val) {
-        // Name is taken
-        return this.setState({error: 'Name is taken', connecting: false});
-      } else {
-        // Store reference to peer
-        const peer = new SimplePeer({initiator: true});
-        this.peer = peer;
-
-        // Sending signal
-        peer.on('signal', (signalData) => {
-          const newSignalDataRef = nameRef.push();
-          newSignalDataRef.set({
-            data: JSON.stringify(signalData)
-          });
+    const {hostCode, name } = this.state;
+        this.mesh = new Mesh();
+        this.mesh.on(Events.PEER_CONNECTED, (peerId) => {
+          console.log('whoot');
         });
-
-        // Recieving signal
-        const hostSignalRef = database.ref('/rooms/'+code+'/host/'+name);
-        hostSignalRef.on('child_added', (res) => {
-          peer.signal(JSON.parse(res.val().data));
+        this.mesh.on(Events.RECIEVED_DATA, ({peerId, data}) => {
+            this.handleData(data);
         });
-
-        // Connecting
-        peer.on('connect', () => {
-          
-          // The connection is established, so disconnect from firebase
-          database.goOffline();
-          
-          // connect event is broken in chrome tabs or something, so this works around it for host
-          // https://github.com/feross/simple-peer/issues/178
-          setTimeout(() => {
-            this.broadcast({
-              type: 'connected'
+        this.mesh.on(Events.PEER_DISCONNECTED, (peerId) => {
+          if (peerId === hostCode) {
+            this.setState({
+              gameStarted: false,
+              connected: false,
+              error: 'Disconnected from host',
+              hostCode: ''
             });
-            this.setState({connected: true, connecting: false})
-          }, 1000);
+          }
         });
 
-        // Data
-        peer.on('data', (data) => {
-          // got a data channel message
-          this.handleData(JSON.parse(data));
-        });
-
-        // Host disconnect
-        peer.on('close', () => {
-          // Update UI
+        this.mesh.connectToPeer(hostCode).then(() => {
+          this.setState({connected: true, connecting: false})
+          this.mesh.sendTo(hostCode, {type: 'connected', playerName: name});
+        }).catch(() => {
+          console.error('failed to connect to host');
           this.setState({
             gameStarted: false,
             connected: false,
             error: 'Disconnected from host',
-            code: ''
+            hostCode: ''
           });
-
-          // Reconnect to firebase
-          database.goOnline();
-
-          // Remove room
-          database.ref('/rooms/'+code).remove();
-          // TODO: Allow another host to join and continue game?
-        });
-      }
-    })
+        });      
   }
 
   render() {
@@ -153,11 +111,11 @@ class Player extends Component {
           <div>
             <h1>Join a Game</h1>
             <TextField
-              hintText='Room Code'
-              floatingLabelText='Room Code'
+              hintText='Room hostCode'
+              floatingLabelText='Room hostCode'
               maxLength='4'
-              value={this.state.code}
-              onChange={(_, v) => this.setState({code: v.toUpperCase()})}
+              value={this.state.hostCode}
+              onChange={(_, v) => this.setState({hostCode: v.toUpperCase()})}
               errorText={this.state.error}
             />
             <br />

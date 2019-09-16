@@ -9,8 +9,8 @@ import sky from './assets/sky.png';
 import ground from './assets/platform.png';
 import dude from './assets/dude.png';
 
-const gameWidth = 800;
-const gameHeight = 600;
+const gameWidth = Math.min(window.innerWidth, 800);
+const gameHeight = Math.min(window.innerHeight, 600);
 
 function createGame(inputPlayers, onUpdateCb, ignore, getPlayerInput) {
   const state = { preload: preload, create: create, update: update}
@@ -68,7 +68,7 @@ function createGame(inputPlayers, onUpdateCb, ignore, getPlayerInput) {
     players = Object.assign({}, inputPlayers);
     for(const playerName in inputPlayers){
       // The player and its settings
-      const playerSprite = game.add.sprite(500, game.world.height - 150, 'dude');
+      const playerSprite = game.add.sprite(game.world.width*0.9, game.world.height - 150, 'dude');
 
       //  We need to enable physics on the player
       game.physics.arcade.enable(playerSprite);

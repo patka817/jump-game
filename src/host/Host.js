@@ -1,10 +1,9 @@
 import React, { Component } from 'react';
 import CircularProgress from 'material-ui/CircularProgress';
 import LobbyList from '../lobby/LobbyList';
-import * as firebase from 'firebase';
-import SimplePeer from 'simple-peer';
 import HostGame from './HostGame';
 import { OnInputChange, DefaultInput } from '../game/Input';
+import { Mesh, Events } from '../rtcmesh';
 
 const roomCodeOptions = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 
@@ -17,34 +16,23 @@ function generateRoomCode() {
   return code;
 }
 
-function createRoom(room,){
-  return room.set({
-    'createdAt': firebase.database.ServerValue.TIMESTAMP
-  });
-}
-
-function getOpenRoom(database){
+function getOpenRoom(){
   return new Promise((resolve, reject) => {
     const code = generateRoomCode();
-    const room = database.ref('rooms/'+code);
-    room.once('value').then((snapshot) => {
-      const roomData = snapshot.val();
-      if (roomData == null) {
-        // Room does not exist
-        createRoom(room).then(resolve(code));
-      } else {
-        const roomTimeout = 1800000; // 30 min
-        const now = Date.now();
-        const msSinceCreated = now - roomData.createdAt;
-        if (msSinceCreated > roomTimeout) {
-          // It is an old room so wipe it and create a new one
-          room.remove().then(() => createRoom(room)).then(resolve(code));
-        } else {
-          // The room is in use so try a different code
-          resolve(getOpenRoom(database));
-        }
+    let mesh = new Mesh(code);
+    let resolved = false;
+    mesh.on(Events.OPEN, (code) => {
+      if (!resolved) {
+        resolved = true;
+        resolve({code, mesh});
       }
-    })
+    });
+    mesh.on(Events.DISCONNECTED, () => {
+      if (!resolved) {
+        resolved = true;
+        reject();
+      }
+    });
   });
 }
 
@@ -56,11 +44,7 @@ class Host extends Component {
       host: true,
       ready: false,
       input: DefaultInput(),
-      // Peer object with blank methods so I don't have to
-      // filter when I iterate over players
-      peer: {
-        send: () => {}
-      }
+      name: props.name
     }
     this.state = {
       players: players,
@@ -68,19 +52,17 @@ class Host extends Component {
       gameStarted: false
     }
 
-    this.database = null;
     this.hostName = props.name;
 
     this.copyPlayers = () => Object.assign({}, this.state.players);
 
     this.playersToArray = () => {
       const playersArr = [];
-      for (const playerName in this.state.players){
+      for (const playerId in this.state.players){
         playersArr.push({
-          name: playerName,
-          input: this.state.players[playerName].input,
-          peer: this.state.players[playerName].peer,
-          ready: this.state.players[playerName].ready
+          name: this.state.players[playerId].name,
+          input: this.state.players[playerId].input,
+          ready: this.state.players[playerId].ready
         });
       }
       return playersArr;
@@ -89,9 +71,9 @@ class Host extends Component {
     this.getPlayersForGame = () => {
       // Don't send peer info
       const players = {};
-      for(const playerName in this.state.players) {
-        players[playerName] = {
-          input: this.state.players[playerName].input
+      for(const playerId in this.state.players) {
+        players[this.state.players[playerId].name] = {
+          input: this.state.players[playerId].input
         }
       }
       return players;
@@ -99,12 +81,10 @@ class Host extends Component {
 
     // Send message to all players
     this.broadcast = (obj) => {
-      for(const playerName in this.state.players){
-        const peer = this.state.players[playerName].peer;
-        if(peer.connected) peer.send(JSON.stringify(obj));
-      }
+      this.mesh.broadcast(obj);
     }
 
+    
     this.broadcastPlayers = () => {
       this.broadcast({
         type: 'players',
@@ -116,17 +96,18 @@ class Host extends Component {
         })
       })
     }
+    
 
-    this.handleData = (playerName, data) => {
+    this.handleData = (peerId, data) => {
       switch(data.type){
         case 'ready':
-          this.handleReady(playerName, data.ready);
+          this.handleReady(peerId, data.ready);
           break;
         case 'input':
-          this.handleInput(playerName, data.input);
+          this.handleInput(peerId, data.input);
           break;
         case 'connected':
-          this.handleConnected(playerName);
+          this.handleConnected(peerId, data.playerName);
           break;
         default:
           throw Error('Unkown input ', data.type);
@@ -135,10 +116,10 @@ class Host extends Component {
     }
 
     // Input from players
-    this.handleInput = (playerName, input) => {
+    this.handleInput = (playerId, input) => {
       const playersCopy = this.copyPlayers();
       for (const key in input) {
-        playersCopy[playerName].input[key] = input[key];
+        playersCopy[playerId].input[key] = input[key];
       }
       this.setState({players: playersCopy});
     }
@@ -148,106 +129,62 @@ class Host extends Component {
       this.handleInput(this.hostName, input);
     });
 
-    this.handleConnected = (playerName) => {
-      // Workaround for https://github.com/feross/simple-peer/issues/178
-      this.broadcastPlayers();
+    this.handleConnected = (playerId, name) => {
+      const playersCopy = this.copyPlayers();
+      playersCopy[playerId] = {
+        ready: false,
+        input: DefaultInput(),
+        name: name
+      };
+      
+      this.setState({players: playersCopy}, () => {
+        // And notify other players
+        this.broadcastPlayers();
+      });
     }
     
-    this.handleReady = (name, ready) => {
+    this.handleReady = (peerId, ready) => {
       const p = this.copyPlayers();
-      p[name].ready = ready;
+      p[peerId].ready = ready;
       this.setState({
         players: p
       }, () => {
         // Update players of everyone's status
         this.broadcastPlayers();
-
-        // After updating the players ready status, check if the game should start
-        let playerCount = 0;
-        const playersReady = [];
-        for(const playerName in this.state.players){
-          playerCount++;
-          playersReady.push(this.state.players[playerName].ready);
-        }
-        if(playerCount > 0 && playersReady.every(e => e === true)){
+        const playerArray = this.playersToArray();
+        const startGame = playerArray.length === 0 ? false : (playerArray.every(p => p.ready === true ));
+        if (startGame) {
           // We have enough players and they are all ready
           this.setState({gameStarted: true});
           
           // Send start game to all peers
           this.broadcast({type: 'startGame'});
-
-          // Delete the room
-          this.database.ref('/rooms/'+this.state.code).remove();
         }
       });
     }
   }
 
   componentDidMount(){
-    const database = firebase.database();
-    this.database = database;
-    getOpenRoom(database).then((code) => {
+    getOpenRoom().then(({code, mesh}) => {
+      this.mesh = mesh;
+
+      this.mesh.on(Events.RECIEVED_DATA, ({peerId, data}) => {
+        this.handleData(peerId, data);
+      });
+
+      this.mesh.on(Events.PEER_DISCONNECTED, (peerId) => {
+        const playersCopy = Object.assign({}, this.state.players);
+        delete playersCopy[peerId];
+        this.setState({players: playersCopy});
+      });
+
+      this.mesh.on(Events.PEER_CONNECTED, (id) => {
+        // something..
+        console.log('TODO: ?? Peer connected..');
+      });
       // Display room code
       this.setState({code: code});
-
-      // Players signaling
-      database.ref('/rooms/'+code+'/players').on('child_added', ({key: playerName}) => {
-        // Create Peer channel
-        const peer = new SimplePeer();
-
-        // Upload Host signals
-        const signalDataRef = database.ref('/rooms/'+code+'/host/'+playerName);
-        peer.on('signal', (signalData) => {
-          const newSignalDataRef = signalDataRef.push();
-          newSignalDataRef.set({
-            data: JSON.stringify(signalData)
-          });
-        });
-        
-        // Add player to player list
-        // Use fake peer so broadcasts don't fail
-        const playersCopy = this.copyPlayers();
-        playersCopy[playerName] = {
-          peer: peer,
-          //_peer: peer,
-          ready: false,
-          input: DefaultInput()
-        }
-        this.setState({players: playersCopy}, () => {
-          // And notify other players
-          this.broadcastPlayers();
-        });
-
-        // Listen for player singnaling data
-        const playerRef = database.ref('/rooms/'+code+'/players/'+playerName);
-        playerRef.on('child_added', (res) => peer.signal(JSON.parse(res.val().data)));
-
-        // Listen to messages from player
-        peer.on('data', (data) => {
-          this.handleData(playerName, JSON.parse(data));
-        });
-
-        // Player disconnect
-        peer.on('close', () => {
-          // Delete local ref to player
-          const playersCopy = Object.assign({}, this.state.players);
-          delete playersCopy[playerName];
-          this.setState({players: playersCopy});
-
-          // Delete remote ref to player
-          playerRef.remove();
-
-          // Remove callbacks
-          playerRef.off('child_added');
-
-          // Delete remote signaling to player
-          signalDataRef.remove();
-
-          // Delete peer reference
-          peer.destroy();
-        });
       });
-    });
   }
 
   render() {
